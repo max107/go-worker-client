@@ -57,6 +57,20 @@ func GetPgsqlMsg() string {
 	return string(msg)
 }
 
+func GetMongoMsg() string {
+	args := make(map[string]interface{})
+	args["database"] = "mimictl_user"
+	args["username"] = "mimictl_user"
+	args["password"] = "123456"
+	cmd := &Command{Plugin: "mongo", Args: args}
+
+	msg, err := json.Marshal(cmd)
+	if err != nil {
+		panic(err)
+	}
+	return string(msg)
+}
+
 func SendCommand(server string, timeout time.Duration, retries int, msg string) error {
 	log.Println("I: connecting to server...")
 	client, err := zmq.NewSocket(zmq.REQ)
@@ -128,7 +142,7 @@ func SendCommand(server string, timeout time.Duration, retries int, msg string) 
 }
 
 func main() {
-	msg := GetPgsqlMsg()
+	msg := GetMongoMsg()
 	err := SendCommand(SERVER_ENDPOINT, REQUEST_TIMEOUT, REQUEST_RETRIES, msg)
 	if err != nil {
 		log.Printf("Fail")
