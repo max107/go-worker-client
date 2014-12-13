@@ -29,12 +29,26 @@ type Command struct {
 
 type Output interface{}
 
-func GetMsg() string {
+func GetMysqlMsg() string {
 	args := make(map[string]interface{})
 	args["database"] = "mimictl_user1"
 	args["username"] = "mimictl_user1"
 	args["password"] = "123456"
 	cmd := &Command{Plugin: "mysql", Args: args}
+
+	msg, err := json.Marshal(cmd)
+	if err != nil {
+		panic(err)
+	}
+	return string(msg)
+}
+
+func GetPgsqlMsg() string {
+	args := make(map[string]interface{})
+	args["database"] = "mimictl_user"
+	args["username"] = "mimictl_user"
+	args["password"] = "123456"
+	cmd := &Command{Plugin: "pgsql", Args: args}
 
 	msg, err := json.Marshal(cmd)
 	if err != nil {
@@ -114,7 +128,7 @@ func SendCommand(server string, timeout time.Duration, retries int, msg string) 
 }
 
 func main() {
-	msg := GetMsg()
+	msg := GetPgsqlMsg()
 	err := SendCommand(SERVER_ENDPOINT, REQUEST_TIMEOUT, REQUEST_RETRIES, msg)
 	if err != nil {
 		log.Printf("Fail")
