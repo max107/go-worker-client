@@ -10,7 +10,9 @@ import (
 	zmq "github.com/pebbe/zmq4"
 
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -29,7 +31,9 @@ type Output interface{}
 
 func GetMsg() string {
 	args := make(map[string]interface{})
-	args["test"] = []string{"foo", "bar"}
+	args["database"] = "mimictl_user1"
+	args["username"] = "mimictl_user1"
+	args["password"] = "123456"
 	cmd := &Command{Plugin: "mysql", Args: args}
 
 	msg, err := json.Marshal(cmd)
@@ -39,29 +43,27 @@ func GetMsg() string {
 	return string(msg)
 }
 
-func main() {
-	fmt.Println("I: connecting to server...")
+func SendCommand(server string, timeout time.Duration, retries int, msg string) error {
+	log.Println("I: connecting to server...")
 	client, err := zmq.NewSocket(zmq.REQ)
 	if err != nil {
 		panic(err)
 	}
-	client.Connect(SERVER_ENDPOINT)
-
-	msg := GetMsg()
+	client.Connect(server)
 
 	poller := zmq.NewPoller()
 	poller.Add(client, zmq.POLLIN)
 
 	sequence := 0
-	retries_left := REQUEST_RETRIES
-	for retries_left > 0 {
+	retriesLeft := retries
+	for retriesLeft > 0 {
 		//  We send a request, then we work to get a reply
 		sequence++
 		client.SendMessage(msg)
 
 		for expect_reply := true; expect_reply; {
 			//  Poll socket for a reply, with timeout
-			sockets, err := poller.Poll(REQUEST_TIMEOUT)
+			sockets, err := poller.Poll(timeout)
 			if err != nil {
 				break //  Interrupted
 			}
@@ -80,23 +82,23 @@ func main() {
 
 				var out Output
 				if err := json.Unmarshal([]byte(msg), &out); err != nil {
-					fmt.Printf("E: malformed reply from server: %s\n", reply)
+					errors.New(fmt.Sprintf("E: malformed reply from server: %s\n", reply))
 				} else {
-					fmt.Printf("I: server replied OK (%s)\n", reply[0])
-					retries_left = REQUEST_RETRIES
+					log.Printf("I: server replied OK (%s)\n", reply[0])
+					retriesLeft = retries
 					expect_reply = false
+					return nil
 				}
 			} else {
-				retries_left--
-				if retries_left == 0 {
-					fmt.Println("E: server seems to be offline, abandoning")
-					break
+				retriesLeft--
+				if retriesLeft == 0 {
+					errors.New("E: server seems to be offline, abandoning")
 				} else {
-					fmt.Println("W: no response from server, retrying...")
+					log.Println("W: no response from server, retrying...")
 					//  Old socket is confused; close it and open a new one
 					client.Close()
 					client, _ = zmq.NewSocket(zmq.REQ)
-					client.Connect(SERVER_ENDPOINT)
+					client.Connect(server)
 					// Recreate poller for new client
 					poller = zmq.NewPoller()
 					poller.Add(client, zmq.POLLIN)
@@ -107,4 +109,14 @@ func main() {
 		}
 	}
 	client.Close()
+
+	return nil
+}
+
+func main() {
+	msg := GetMsg()
+	err := SendCommand(SERVER_ENDPOINT, REQUEST_TIMEOUT, REQUEST_RETRIES, msg)
+	if err != nil {
+		log.Printf("Fail")
+	}
 }
