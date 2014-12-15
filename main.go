@@ -1,25 +1,16 @@
-//
-//  Hello World client.
-//  Connects REQ socket to tcp://localhost:5555
-//  Sends "Hello" to server, expects "World" back
-//
-
 package main
 
 import (
-	zmq "github.com/pebbe/zmq4"
-
 	"encoding/json"
-	"errors"
-	"fmt"
+	"github.com/gin-gonic/gin"
+	zmq "github.com/pebbe/zmq4"
 	"log"
+	"net/http"
 	"time"
 )
 
 const (
-	REQUEST_TIMEOUT = 2500 * time.Millisecond //  msecs, (> 1000!)
-	REQUEST_RETRIES = 3                       //  Before we abandon
-	SERVER_ENDPOINT = "tcp://localhost:5555"
+	SERVER_ENDPOINT = "tcp://192.168.0.89:5555"
 )
 
 type Command struct {
@@ -28,171 +19,63 @@ type Command struct {
 	Args   map[string]interface{}
 }
 
-type Output interface{}
+func SendCommand(msg string) (string, error) {
+	requester, _ := zmq.NewSocket(zmq.REQ)
+	defer requester.Close()
+	requester.Connect(SERVER_ENDPOINT)
 
-func GetMysqlMsg() string {
-	args := make(map[string]interface{})
-	args["database"] = "mimictl_user1"
-	args["username"] = "mimictl_user1"
-	args["password"] = "123456"
-	cmd := &Command{Plugin: "mysql", Args: args}
+	requester.Send(msg, 0)
+	return requester.Recv(0)
+}
+
+func commandAction(plugin, action string, c *gin.Context) {
+	cmd := Command{
+		Plugin: plugin,
+		Action: action,
+	}
+
+	binded := c.Bind(&cmd.Args)
+	if !binded {
+		log.Printf("Failed to bind")
+	}
 
 	msg, err := json.Marshal(cmd)
 	if err != nil {
 		panic(err)
 	}
-	return string(msg)
-}
 
-func GetPgsqlMsg() string {
-	args := make(map[string]interface{})
-	args["database"] = "mimictl_user"
-	args["username"] = "mimictl_user"
-	args["password"] = "123456"
-	cmd := &Command{Plugin: "pgsql", Args: args}
-
-	msg, err := json.Marshal(cmd)
-	if err != nil {
-		panic(err)
-	}
-	return string(msg)
-}
-
-func GetMongoMsg() string {
-	args := make(map[string]interface{})
-	args["database"] = "mimictl_user"
-	args["username"] = "mimictl_user"
-	args["password"] = "123456"
-	cmd := &Command{Plugin: "mongo", Args: args}
-
-	msg, err := json.Marshal(cmd)
-	if err != nil {
-		panic(err)
-	}
-	return string(msg)
-}
-
-func GetOpenvzMsg() string {
-	args := make(map[string]interface{})
-
-	cpuunits := "600"
-	cpulimit := "25"
-	memorylimit := 256
-	disklimit := 2048
-
-	args["cpuunits"] = cpuunits
-	args["cpulimit"] = cpulimit
-
-	args["ram"] = fmt.Sprintf("%sM", memorylimit)
-	args["swap"] = fmt.Sprintf("%sM", memorylimit*2)
-
-	args["vmguarpages"] = fmt.Sprintf("%sM", memorylimit)
-	args["oomguarpages"] = fmt.Sprintf("%sM", memorylimit)
-	args["privvmpages"] = fmt.Sprintf("%sM:%sM", memorylimit, memorylimit*2)
-
-	args["diskspace"] = fmt.Sprintf("%sM:%sM", disklimit, disklimit+200)
-	args["diskinodes"] = fmt.Sprintf("%s:%s", 300000*(disklimit/1024), 320000*(disklimit/1024))
-
-	// args["ioprio"] = fmt.Sprintf("%s", 4)
-
-	// максимальное количество процессов контейнере (защитит от форкбомбы)
-	// args["numproc"] = "1024:1024"
-	// максимальное количество TCP-сокетов
-	// args["numtcpsock"] = "1024:1024"
-	// максимальное количество не TCP-сокетов
-	// args["numothersock"] = "1024:1024"
-
-	// ограничения на размер буфера отправки TCP
-	// args["tcpsndbuf"] = "1m:2m"
-	// ограничения на размер буфера приема TCP
-	// args["tcprcvbuf"] = "1m:2m"
-
-	// максимальное количество открытых файлов
-	args["numfile"] = "4096"
-
-	cmd := &Command{Plugin: "openvz", Action: "Create", Args: args}
-
-	msg, err := json.Marshal(cmd)
-	if err != nil {
-		panic(err)
-	}
-	return string(msg)
-}
-
-func SendCommand(server string, timeout time.Duration, retries int, msg string) error {
-	log.Println("I: connecting to server...")
-	client, err := zmq.NewSocket(zmq.REQ)
-	if err != nil {
-		panic(err)
-	}
-	client.Connect(server)
-
-	poller := zmq.NewPoller()
-	poller.Add(client, zmq.POLLIN)
-
-	sequence := 0
-	retriesLeft := retries
-	for retriesLeft > 0 {
-		//  We send a request, then we work to get a reply
-		sequence++
-		client.SendMessage(msg)
-
-		for expect_reply := true; expect_reply; {
-			//  Poll socket for a reply, with timeout
-			sockets, err := poller.Poll(timeout)
-			if err != nil {
-				break //  Interrupted
-			}
-
-			//  Here we process a server reply and exit our loop if the
-			//  reply is valid. If we didn't a reply we close the client
-			//  socket and resend the request. We try a number of times
-			//  before finally abandoning:
-
-			if len(sockets) > 0 {
-				//  We got a reply from the server, must match sequence
-				reply, err := client.RecvMessage(0)
-				if err != nil {
-					break //  Interrupted
-				}
-
-				var out Output
-				if err := json.Unmarshal([]byte(msg), &out); err != nil {
-					errors.New(fmt.Sprintf("E: malformed reply from server: %s\n", reply))
-				} else {
-					log.Printf("I: server replied OK (%s)\n", reply[0])
-					retriesLeft = retries
-					expect_reply = false
-					return nil
-				}
-			} else {
-				retriesLeft--
-				if retriesLeft == 0 {
-					errors.New("E: server seems to be offline, abandoning")
-				} else {
-					log.Println("W: no response from server, retrying...")
-					//  Old socket is confused; close it and open a new one
-					client.Close()
-					client, _ = zmq.NewSocket(zmq.REQ)
-					client.Connect(server)
-					// Recreate poller for new client
-					poller = zmq.NewPoller()
-					poller.Add(client, zmq.POLLIN)
-					//  Send request again, on new socket
-					client.SendMessage(msg)
-				}
-			}
-		}
-	}
-	client.Close()
-
-	return nil
+	reply, err := SendCommand(string(msg))
+	c.JSON(200, gin.H{"status": err != nil, "message": reply})
 }
 
 func main() {
-	msg := GetOpenvzMsg()
-	err := SendCommand(SERVER_ENDPOINT, REQUEST_TIMEOUT, REQUEST_RETRIES, msg)
-	if err != nil {
-		log.Printf("Fail")
+	// msg := GetOpenvzMsg()
+
+	r := gin.Default()
+
+	// Global middlewares
+	r.Use(gin.Logger())
+	r.Use(gin.Recovery())
+
+	v1 := r.Group("/v1")
+	{
+		v1.POST("/create/:plugin", func(c *gin.Context) {
+			commandAction(c.Params.ByName("plugin"), "create", c)
+		})
+		v1.PUT("/update/:plugin", func(c *gin.Context) {
+			commandAction(c.Params.ByName("plugin"), "update", c)
+		})
+		v1.DELETE("/delete/:plugin", func(c *gin.Context) {
+			commandAction(c.Params.ByName("plugin"), "delete", c)
+		})
 	}
+
+	s := &http.Server{
+		Addr:           ":8080",
+		Handler:        r,
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   10 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+	s.ListenAndServe()
 }
